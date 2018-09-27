@@ -297,13 +297,130 @@ object MyTree{
     fold(t)((v:A) => Leaf(f(v)):MyTree[B])(Branch(_,_))
 }
 
+/// Chapter 4 ///
+
+sealed trait MyOption[+A] {
+  def map[B](f : A => B) : MyOption[B] = this match {
+    case None => None
+    case Some(v) => Some(f(v))
+  }
+  
+  def getOrElse[B >: A](default: => B) : B = this match {
+    case None => default
+    case Some(v) => v
+  }
+  
+  def flatMap[B](f : A => MyOption[B]) : MyOption[B] = this.map(f).getOrElse(None)
+  
+  def orElse[B >: A](ob: => MyOption[B]) : MyOption[B] = this.map(Some(_)).getOrElse(ob)
+  
+  def filter(f : A => Boolean) : MyOption[A] = this.flatMap((v) => if(f(v)) Some(v) else None)
+}
+
+case object None extends MyOption[Nothing]
+case class Some[+A](v : A) extends MyOption[A]
+
+object Chapter4 {
+  def mean(xs : Seq[Double]) : MyOption[Double] =
+    if(xs.isEmpty) None
+    else Some(xs.sum / xs.length)
+  
+  def variance(xs : Seq[Double]) : MyOption[Double] = {
+    val m : MyOption[Double] = mean(xs)
+    def withm(m : Double) : MyOption[Double] = mean(xs.map((v) => math.pow(v-m,2)))
+    m.flatMap(withm)
+  }
+  
+  def lift[A,B](f : A => B) : MyOption[A] => MyOption[B] = _ map f
+  val abs0 : MyOption[Double] => MyOption[Double] = lift(math.abs)
+  
+  def lift2[A,B,C](f : (A,B) => C) : (MyOption[A], MyOption[B]) => MyOption[C] = {
+    (oa, ob) => {
+      oa.map(MyModule.curry(f)).flatMap(ob.map(_))
+    }
+  }
+  
+  def Try[A](a: => A) : MyOption[A] =
+    try Some(a)
+    catch { case e : Exception => None }
+  
+  def map2[A,B,C](a : MyOption[A], b : MyOption[B])(f : (A,B) => C) : MyOption[C] = 
+    lift2(f)(a,b)
+  
+  def sequence[A](a : MyList[MyOption[A]]) : MyOption[MyList[A]] = {
+    def f(x : MyOption[A], y : MyOption[MyList[A]]) : MyOption[MyList[A]] =
+      x.flatMap((v) => y.map((l) => Cons(v,l)))
+    MyList.foldRight(a, Some(Nil):MyOption[MyList[A]])(f)
+  }
+  
+  def traverse[A,B](a : MyList[A])(f : A => MyOption[B]) : MyOption[MyList[B]] = {
+    def glue(x : A, y : MyOption[MyList[B]]) : MyOption[MyList[B]] =
+      f(x).flatMap((v) => y.map(Cons(v,_)))
+    MyList.foldRight(a, Some(Nil):MyOption[MyList[B]])(glue)
+  }
+  
+  def sequence2[A](a : MyList[MyOption[A]]) : MyOption[MyList[A]] = traverse(a)((x)=>x)
+}
+
+sealed trait MyEither[+E, +A] {
+  def map[B](f : A => B) : MyEither[E,B] = this match {
+    case Left(v) => Left(v)
+    case Right(v) => Right(f(v))
+  }
+  
+  def flatMap[EE >: E, B](f : A => MyEither[EE,B]) : MyEither[EE,B] = this match {
+    case Left(v) => Left(v)
+    case Right(v) => f(v)
+  }
+  
+  def orElse[EE >: E, B >: A](b: => MyEither[EE, B]) : MyEither[EE, B] = this match {
+    case Left(_) => b
+    case Right(v) => Right(v)
+  }
+  
+  def map2[EE >: E, B, C](b : MyEither[EE,B])(f : (A,B) => C) : MyEither[EE, C] = {
+    for {
+      av <- this
+      bv <- b
+    } yield f(av,bv)
+  }
+}
+case class Left[+E](v:E) extends MyEither[E, Nothing]
+case class Right[+A](v:A) extends MyEither[Nothing, A]
+
+object Chapter4Either {
+  def Try[A](a: => A) : MyEither[Exception, A] =
+    try Right(a)
+    catch { case e : Exception => Left(e) }
+  
+  def traverse[E,A,B](as : MyList[A])(f : A => MyEither[E,B]) : MyEither[E, MyList[B]] = {
+    def glue(a : A, l : MyEither[E, MyList[B]]) : MyEither[E, MyList[B]] =
+      for {
+        b <- f(a)
+        bs <- l
+      } yield Cons(b,bs)
+    MyList.foldRight(as, Right(Nil):MyEither[E,MyList[B]])(glue)
+  }
+  
+  def sequence[E,A](es : MyList[MyEither[E,A]]) : MyEither[E,MyList[A]] =
+    traverse(es)((x) => x)
+}
+
+/// MainApp ///
+
 object MainApp{
   
   def main(args: Array[String]) : Unit = {
     println("Hello, world!")
     //MyModule.main(args)
-    println(MyList.product(MyList(1,2,3)))
-    println(MyList.drop(MyList(1,2,3,4,5,6), 3))
-    println(MyList.flatten(MyList(MyList(1,2,3),MyList(4,5,6),MyList(7,8,9))))
+    //println(MyList.product(MyList(1,2,3)))
+    //println(MyList.drop(MyList(1,2,3,4,5,6), 3))
+    //println(MyList.flatten(MyList(MyList(1,2,3),MyList(4,5,6),MyList(7,8,9))))
+    val as = MyList(Some(1), Some(2), Some(3), Some(4))
+    println(Chapter4.sequence(as))
+    val bs = MyList(Some(1), Some(2), None, Some(4))
+    println(Chapter4.sequence(bs))
+    val cs = MyList(Right(1), Left("Error1"), Right(2), Left("Error2"), Right(3))
+    println(Chapter4Either.sequence(cs))
   }
 }
