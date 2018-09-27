@@ -315,6 +315,8 @@ sealed trait MyOption[+A] {
   def orElse[B >: A](ob: => MyOption[B]) : MyOption[B] = this.map(Some(_)).getOrElse(ob)
   
   def filter(f : A => Boolean) : MyOption[A] = this.flatMap((v) => if(f(v)) Some(v) else None)
+  
+  def isEmpty : Boolean = this match { case None => true case _ => false }
 }
 
 case object None extends MyOption[Nothing]
@@ -406,21 +408,232 @@ object Chapter4Either {
     traverse(es)((x) => x)
 }
 
+/// Chapter 5 ///
+
+sealed trait MyStream[+A] {
+  def headOption : MyOption[A] = this match {
+    case Empty => None
+    case Next(h,t) => Some(h())
+  }
+  
+  def toList : List[A] = this match {
+    case Empty => List()
+    case Next(h,t) => h()::t().toList
+  }
+  
+  def take(n : Int) : MyStream[A] = this match {
+    case Empty => Empty
+    case Next(h,t) => {
+      if(n <= 0) Empty
+      else Next(h, () => t().take(n-1))
+    }
+  }
+  
+  def drop(n : Int) : MyStream[A] = this match {
+    case Empty => Empty
+    case Next(h,t) => {
+      if(n <= 0) this
+      else t().drop(n-1)
+    }
+  }
+  
+  def takeWhile(p : A => Boolean) : MyStream[A] = this match {
+    case Empty => Empty
+    case Next(h,t) => {
+      if(p(h())) Next(h, () => t().takeWhile(p))
+      else Empty
+    }
+  }
+  
+  def exists(p : A => Boolean) : Boolean = this match {
+    case Next(h, t) => p(h()) || t().exists(p)
+    case _ => false
+  }
+  
+  // allows more reusable recursion (f doesn't evaluate the second parameter (tail)) 
+  def foldRight[B](z: => B)(f : (A, => B) => B) : B =
+    this match {
+    case Next(h,t) => f(h(), t().foldRight(z)(f))
+    case _ => z
+  }
+  
+  def forAll(p : A => Boolean) : Boolean = foldRight(true)((a,b) => p(a) && b)
+  
+  def exists2(p : A => Boolean) = foldRight(false)((a,b) => p(a) || b)
+  def takeWhile2(p : A => Boolean) = 
+    foldRight(Empty:MyStream[A])((a,b) => if(p(a)) Next(()=>a, ()=>b) else Empty)
+  def headOption2 = foldRight(None:MyOption[A])((a,b) => Some(a))
+  
+  def map[B](f : A => B) : MyStream[B] =
+    foldRight(Empty:MyStream[B])((a,b) => Next(()=>f(a), ()=>b))
+  
+  def filter(p : A => Boolean) : MyStream[A] =
+    foldRight(Empty:MyStream[A])((a,b) => if(p(a)) Next(()=>a, ()=>b) else b)
+  
+  def flatMap[B](f : A => MyStream[B]) : MyStream[B] =
+    foldRight(Empty:MyStream[B])(f(_) append _)
+  
+  def append[B >: A](other : MyStream[B]) : MyStream[B] =
+    foldRight(other)(MyStream.next(_,_))
+    
+  def find(p : A => Boolean) : MyOption[A] =
+    filter(p).headOption
+   
+  //unfold[A,S](z : S)(f : S => MyOption[(A,S)]) : MyStream[A]
+  import MyStream.unfold
+  def unfoldMap[B](f : A => B) : MyStream[B] =
+    unfold(this){
+      case Empty => None
+      case Next(h,t) => Some((f(h()),t()))
+    } // funny syntax seems like : (_ match {...}) <=> {...}
+  
+  def unfoldTake(n : Int) : MyStream[A] =
+    unfold((this,n))((sn) => {
+      val s = sn._1
+      val n = sn._2
+      if(n <= 0) None
+      else s match {
+        case Empty => None
+        case Next(h,t) => Some((h(), (t(),n-1)))
+      }
+    })
+  
+  def unfoldTakeWhile(p : A => Boolean) : MyStream[A] =
+    unfold(this){
+      case Next(h,t) if(p(h())) => Some((h(), t())) // nice syntax : have if statement in case match
+      case _ => None
+    }
+  
+  def unfoldZipWith[B,C](other : MyStream[B])(f : (A,B) => C) : MyStream[C] =
+    unfold((this,other)){
+      case (Next(h1,t1), Next(h2,t2)) => Some((f(h1(),h2()), (t1(),t2())))
+      case _ => None
+    }
+  
+  def tail : MyStream[A] = this match {
+    case Empty => Empty
+    case Next(h,t) => t()
+  }
+  
+  def unfoldZipAll[B](other : MyStream[B]) : MyStream[(MyOption[A], MyOption[B])] =
+    unfold((this,other)){
+      case (Empty, Empty) => None
+      case (s1,s2) => Some( ( (s1.headOption, s2.headOption) , (s1.tail, s2.tail) ) )
+    }
+  
+  def startsWith[B >: A](pre : MyStream[B]) : Boolean =
+    this.unfoldZipAll(pre).unfoldTakeWhile(!_._2.isEmpty).forAll{ case (c1,c2) => c1 == c2 }
+    // answer from github website
+    // below is my first implementation :
+    // this.unfoldZipWith(pre)(_ == _).forAll((x) => x)
+    // -> wrong because of the case this.length < pre.length. my mistake
+  
+  def hasSubsequence[B >: A](pre : MyStream[B]) : Boolean =
+    tails.exists(_ startsWith pre)
+  
+  def tails : MyStream[MyStream[A]] =
+    unfold(this){
+      case Next(h,t) => Some((Next(h,t), t()))
+      case _ => None
+    }.append(MyStream())
+  
+  def scanRight[B](z : B)(f : (A,B) => B) : MyStream[B] = this match {
+    case Empty => MyStream(z)
+    case Next(h,t) => {
+      val res = t().scanRight(z)(f)
+      res match {
+        case Next(rh,_) => MyStream.next(f(h(),rh()),res)
+        case _ => throw new Exception // never happens but dirty code...
+      }
+    }
+  }  
+  /*
+  website implementation
+  def scanRight[B](z: B)(f: (A, => B) => B): Stream[B] =
+  foldRight((z, Stream(z)))((a, p0) => {
+    // p0 is passed by-name and used in by-name args in f and cons. So use lazy val to ensure only one evaluation...
+    lazy val p1 = p0
+    val b2 = f(a, p1._1)
+    (b2, cons(b2, p1._2))
+  })._2 
+  */
+}
+case object Empty extends MyStream[Nothing]
+case class Next[+A](h : () => A, t : () => MyStream[A]) extends MyStream[A]
+
+object MyStream {
+  def next[A](h: => A, t: => MyStream[A]) : MyStream[A] = {
+    lazy val head = h
+    lazy val tail = t
+    Next(() => head, () => tail)
+  }
+  def empty[A] : MyStream[A] = Empty
+  def apply[A](as : A*) : MyStream[A] =
+    if(as.isEmpty) empty else next(as.head, apply(as.tail : _*))
+  
+  def constant[A](a : A) : MyStream[A] = next(a, constant(a))
+  def from(n : Int) : MyStream[Int] = next(n, from(n+1))
+  def fibsHelper(a : Int, b : Int) : MyStream[Int] = next(b, fibsHelper(b, a+b))
+  def fibs() : MyStream[Int] = next(0, fibsHelper(0, 1))
+  def unfold[A,S](z : S)(f : S => MyOption[(A,S)]) : MyStream[A] = f(z) match {
+    case None => Empty
+    case Some((a,s)) => next(a, unfold(s)(f))
+  }
+  
+  val unfoldFibs = unfold((0,1))((s) => Some((s._1,(s._2,s._1+s._2))))
+  def unfoldFrom(n : Int) = unfold(n)((n) => Some((n,n+1)))
+  def unfoldConstant(n : Int) = unfold(n)((n) => Some((n,n)))
+  val unfoldOnes = unfoldConstant(1)
+}
+
 /// MainApp ///
 
 object MainApp{
   
   def main(args: Array[String]) : Unit = {
-    println("Hello, world!")
+    //println("Hello, world!")
     //MyModule.main(args)
     //println(MyList.product(MyList(1,2,3)))
     //println(MyList.drop(MyList(1,2,3,4,5,6), 3))
     //println(MyList.flatten(MyList(MyList(1,2,3),MyList(4,5,6),MyList(7,8,9))))
-    val as = MyList(Some(1), Some(2), Some(3), Some(4))
+    /*val as = MyList(Some(1), Some(2), Some(3), Some(4))
     println(Chapter4.sequence(as))
     val bs = MyList(Some(1), Some(2), None, Some(4))
     println(Chapter4.sequence(bs))
     val cs = MyList(Right(1), Left("Error1"), Right(2), Left("Error2"), Right(3))
-    println(Chapter4Either.sequence(cs))
+    println(Chapter4Either.sequence(cs))*/
+    import MyStream._
+    val s = next(1,next(2,next(3,empty)))
+    println(s.drop(2).toList)
+    println(s.headOption2)
+    println(Empty.headOption2)
+    println(s.map(_+4).toList)
+    println(s.filter(_ % 2 == 0).toList)
+    val bomb = next(1,next(2,next(3,next(sys.error("fail"), empty))))
+    println(bomb)
+    //println(bomb.toList)
+    println(s.append(bomb))
+    //// the book doesn't say lazy val, just val instead. that causes error
+    //// which is : forward reference extends over definition of value ones
+    ////lazy val ones : MyStream[Int] = next(1, ones)
+    val ones = constant(1)
+    println(ones.take(5).toList)
+    println(ones.exists(_ % 2 != 0))
+    println(fibs().take(15).toList)
+    def tn(z:Int) = unfold(z)((s) => {val n = if (s%2==0) s/2 else 3*s+1; Some((n,n))})
+    println(tn(1589).take(15).toList)
+    println(unfoldFibs.take(15).toList)
+    println(unfoldFrom(5).take(15).toList)
+    println(ones.unfoldMap(_ + 2).take(15).toList)
+    println(tn(1589).unfoldTake(15).toList)
+    println(tn(1589).unfoldTakeWhile(_ > 150).toList)
+    println(ones.unfoldZipWith(ones)(_+_).take(15).toList)
+    println(ones.unfoldZipAll(s).take(15).toList)
+    println(ones.startsWith(s))
+    println(ones.startsWith(MyStream(1,1,1)))
+    println(ones.startsWith(MyStream()))
+    println(tn(1589).take(15).hasSubsequence(MyStream(596,298,149)))
+    println(s.toList)
+    println(s.scanRight(0)(_+_).toList)
   }
 }
