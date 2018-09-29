@@ -586,6 +586,268 @@ object MyStream {
   val unfoldOnes = unfoldConstant(1)
 }
 
+/// Chapter 6 ///
+
+trait RNG {
+  def nextInt : (Int,RNG)
+}
+
+case class SimpleRNG(seed : Long) extends RNG {
+  def nextInt : (Int, RNG) = {
+    val newSeed = (seed * 0x5DEECE66DL + 0xBL) & 0xFFFFFFFFFFFFL
+    val nextRNG = SimpleRNG(newSeed)
+    val n = (newSeed >>> 16).toInt
+    (n, nextRNG)
+  }
+}
+
+object Chapter6 {
+  def nonNegativeInt(rng : RNG) : (Int, RNG) = {
+    val (i, next) = rng.nextInt
+    if(i == Int.MinValue) (0,next)
+    else if(i < 0) (-i,next)
+    else (i,next)
+  }
+  
+  def double(rng : RNG) : (Double, RNG) = {
+    val (p, next) = nonNegativeInt(rng)
+    if (p < Int.MaxValue) (p.toDouble / Int.MaxValue, next)
+    else ((p-1).toDouble / Int.MaxValue, next)
+  }
+  
+  def intDouble(rng : RNG) : ((Int,Double), RNG) = {
+    val (i,r2) = rng.nextInt
+    val (d,r3) = double(r2)
+    ((i,d),r3)
+  }
+  
+  def doubleInt(rng : RNG) : ((Double,Int), RNG) = {
+    val ((i,d),r2) = intDouble(rng)
+    ((d,i),r2)
+  }
+  
+  def double3(rng : RNG) : ((Double,Double,Double), RNG) = {
+    val (d1,r2) = double(rng)
+    val (d2,r3) = double(r2)
+    val (d3,r4) = double(r3)
+    ((d1,d2,d3),r4)
+  }
+  
+  def ints(count : Int)(rng : RNG) : (List[Int], RNG) = {
+    if(count <= 0) (List(), rng)
+    else {
+      val (l, r) = ints(count-1)(rng)
+      val (x, r2) = r.nextInt
+      (x::l, r2)
+    }
+  }
+  
+  type Rand[+A] = RNG => (A, RNG)
+  val int : Rand[Int] = _.nextInt
+  def unit[A](a : A) : Rand[A] = rng => (a, rng)
+  def map[A,B](s : Rand[A])(f : A => B) : Rand[B] =
+    rng => {
+      val (a, rng2) = s(rng)
+      (f(a), rng2)
+    }
+  def nonNegativeEven : Rand[Int] = map(nonNegativeInt)(i => i - i%2)
+  def double2 : Rand[Double] = 
+    map(nonNegativeInt)((p) => (if (p < Int.MaxValue) p else (p-1)).toDouble / Int.MaxValue)
+  
+  def map2[A,B,C](ra : Rand[A], rb : Rand[B])(f : (A,B) => C) : Rand[C] =
+    rng => {
+      val(a, rng2) = ra(rng)
+      val(b, rng3) = rb(rng2)
+      (f(a,b), rng3)
+    }
+  
+  def both[A,B](ra : Rand[A], rb : Rand[B]) : Rand[(A,B)] = map2(ra,rb)((_,_))
+  val randIntDouble2 : Rand[(Int,Double)] = both(int, double2)
+  val randDoubleInt : Rand[(Double, Int)] = both(double2, int)
+  
+  def sequence[A](fs : List[Rand[A]]) : Rand[List[A]] =
+    rng => {
+      val (r,l) : (RNG, List[A]) =
+        fs.foldRight((rng, List():List[A])){
+          case (f, (r, l)) => {
+            val (res, newr) = f(r)
+            (newr, res::l)
+          }
+        }
+        
+      (l,r)
+    }
+  
+  def ints2(count : Int) : Rand[List[Int]] = sequence(List.fill(count)(int))
+  
+  def flatMap[A,B](f : Rand[A])(g : A => Rand[B]) : Rand[B] = { rng =>
+    val (a,rng2) = f(rng)
+    g(a)(rng2)
+  }
+  
+  def nonNegativeLessThan(n : Int) : Rand[Int] = 
+    flatMap(nonNegativeInt)(p => r => {
+      val mod = p % n
+      if(p + (n-1) - mod >= 0) (mod, r)
+      else nonNegativeLessThan(n)(r)
+    })
+  
+  def mapByFlatMap[A,B](f : Rand[A])(g : A => B) : Rand[B] =
+    flatMap(f)(a => r => (g(a), r))
+  
+  def map2ByFlatMap[A,B,C](ra : Rand[A], rb : Rand[B])(f : (A,B) => C) : Rand[C] =
+    flatMap(ra)(a => rng2 => {
+      val (b,rng3) = rb(rng2)
+      (f(a,b), rng3)
+    })
+  
+  def rollDie : Rand[Int] = map(nonNegativeLessThan(6))(_+1)
+}
+
+case class State[S,+A](run : S => (A,S)) {
+  def map[B](f : A => B) : State[S,B] =
+    State(s => { val (ax, as) = run(s); (f(ax), as) })
+  
+  def map2[B,C](sb : State[S,B])(f : (A,B) => C) : State[S,C] =
+    State(
+    s => { 
+      val (sax, sas) = run(s)
+      val(sbx, sbs) = sb.run(sas)
+      (f(sax, sbx), sbs)
+    })
+  
+  def flatMap[B](f : A => State[S,B]) : State[S,B] =
+    State(s => { val (ax, as) = run(s); f(ax).run(as) })
+}
+
+object State {
+  def unit[S,A](a : A) : State[S,A] = State(s => (a,s))
+  
+  // my bad solution
+  def sequence_old[S,A](fs : List[State[S,A]]) : State[S,List[A]] =
+    State(
+    s => {
+      fs.foldRight((List():List[A], s)){
+        case (e, (rl, rs)) => {
+          val (newe, news) = e.run(rs)
+          (newe::rl, news)
+        }
+      }
+    })
+  
+  // better version of foldRight.
+  def sequence_right[S,A](fs : List[State[S,A]]) : State[S,List[A]] =
+    fs.foldRight(unit[S,List[A]](List()))( (f:State[S,A], acc:State[S,List[A]]) =>
+      acc.map2(f)((la,a) => a::la)
+    )
+
+  // official solution claims that foldLeft is actually faster than foldRight
+  // reason being : The `foldRight` solution
+  // technically has to also walk the list twice, since it has to unravel the call
+  // stack, not being tail recursive. And the call stack will be as tall as the list
+  // is long.
+  def sequence[S,A](fs : List[State[S,A]]) : State[S,List[A]] =
+    fs.reverse.foldLeft(unit[S,List[A]](List()))((acc,f)=>f.map2(acc)(_ :: _))
+  
+  def get[S] : State[S,S] = State(s => (s,s))
+  def set[S](s:S) : State[S,Unit] = State(_ => ((), s))
+  
+  def modify[S](f : S => S) : State[S, Unit] = for {
+    s <- get
+    _ <- set(f(s))
+  } yield ()
+}
+
+sealed trait Input
+case object Coin extends Input
+case object Turn extends Input
+
+case class Machine(locked : Boolean, candies : Int, coins : Int)
+
+object simMachine {
+  // dirty solution. could use case match more elegantly.
+  def work(m : Machine)(i : Input) : Machine = {
+    val Machine(locked, candies, coins) = m
+    if(candies <= 0) m
+    else i match {
+      case Coin => {
+        if(locked) Machine(false, candies, coins+1)
+        else m // do i still increase coin?
+      }
+      case Turn => {
+        if(!locked) Machine(true, candies-1, coins)
+        else m
+      }
+    }
+  }
+  
+  def works(m : Machine)(li : List[Input]) : Machine = {
+    li.foldLeft(m)(work(_)(_))
+  }
+  
+  // my first solution
+  def simulateMachine_old(inputs : List[Input]) : State[Machine, (Int,Int)] =
+    State(
+    m => {
+      val newMachine = works(m)(inputs)
+      val Machine(locked,candies,coins) = newMachine
+      ((coins, candies), newMachine)
+    })
+  
+  import State._
+    
+  // using sequence. it took some time to understand
+  def simulateMachine(inputs : List[Input]) : State[Machine, (Int,Int)] = for {
+    _ <- sequence(inputs.map(i => modify[Machine](m => work(m)(i))))
+    s <- get
+  } yield (s.coins, s.candies)
+  // this is when i finally fully understood the for { ... <- ... } syntax.
+  // everytime x <- y happens,
+  // state s passes through and becomes a new state
+  // and the result of that pass gets bound to x
+  // 'get' is a way to bound the current state to the variable
+  // 'set' is a way to set the current state to a desired state
+  // (while producing meaningless unit value ())
+  
+  /*
+   * looking at the official solution below,
+   * think about how
+   * (i => modify[Machine](m => work(m)(i))) : Input => State[Machine, Unit]
+   *                                         =
+   * (modify[Machine] _ compose work) : Input => State[Machine, Unit]
+   * (actually my work : Machine => Input => Machine, while his work : Input => Machine => Machine
+   * so if i suppose my work was : Input => Machine => Machine,
+   * (i => modify[Machine](m => work(i)(m)))     =    (modify[Machine] _ compose work)
+   * 
+   * what is that _ there.
+   * by experiment i found out that :
+   * "Unapplied methods are only converted to functions when a function type is expected.
+   * You can make this conversion explicit by writing `mult _` or `mult(_)` instead of `mult`."
+   * so that's just
+   * (i) => modify[Machine](work(i)) which makes sense and i understand it now.
+   */
+}
+/*
+ * The official solution
+ object Candy {
+  def update = (i: Input) => (s: Machine) =>
+    (i, s) match {
+      case (_, Machine(_, 0, _)) => s
+      case (Coin, Machine(false, _, _)) => s
+      case (Turn, Machine(true, _, _)) => s
+      case (Coin, Machine(true, candy, coin)) =>
+        Machine(false, candy, coin + 1)
+      case (Turn, Machine(false, candy, coin)) =>
+        Machine(true, candy - 1, coin)
+    }
+
+  def simulateMachine(inputs: List[Input]): State[Machine, (Int, Int)] = for {
+    _ <- sequence(inputs map (modify[Machine] _ compose update))
+    s <- get
+  } yield (s.coins, s.candies)
+}
+ */
+
 /// MainApp ///
 
 object MainApp{
@@ -602,6 +864,8 @@ object MainApp{
     println(Chapter4.sequence(bs))
     val cs = MyList(Right(1), Left("Error1"), Right(2), Left("Error2"), Right(3))
     println(Chapter4Either.sequence(cs))*/
+    
+    /*
     import MyStream._
     val s = next(1,next(2,next(3,empty)))
     println(s.drop(2).toList)
@@ -635,5 +899,17 @@ object MainApp{
     println(tn(1589).take(15).hasSubsequence(MyStream(596,298,149)))
     println(s.toList)
     println(s.scanRight(0)(_+_).toList)
+    */
+    
+    import Chapter6._
+    val r = SimpleRNG(1589)
+    println(ints(15)(r))
+    println(ints2(15)(r))
+    println(double2(r))
+    println(nonNegativeLessThan(100)(r))
+    import simMachine._
+    val inputs = List(Turn,Coin,Turn,Coin,Turn,Coin,Coin,Turn)
+    println(simulateMachine(inputs).run(Machine(true,10,0)))
+    
   }
 }
