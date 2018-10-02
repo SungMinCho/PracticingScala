@@ -805,7 +805,7 @@ object simMachine {
   // everytime x <- y happens,
   // state s passes through and becomes a new state
   // and the result of that pass gets bound to x
-  // 'get' is a way to bound the current state to the variable
+  // 'get' is a way to bind the current state to the variable
   // 'set' is a way to set the current state to a desired state
   // (while producing meaningless unit value ())
   
@@ -901,6 +901,7 @@ object MainApp{
     println(s.scanRight(0)(_+_).toList)
     */
     
+    /*
     import Chapter6._
     val r = SimpleRNG(1589)
     println(ints(15)(r))
@@ -910,6 +911,7 @@ object MainApp{
     import simMachine._
     val inputs = List(Turn,Coin,Turn,Coin,Turn,Coin,Coin,Turn)
     println(simulateMachine(inputs).run(Machine(true,10,0)))
+    */
     
   }
 }
