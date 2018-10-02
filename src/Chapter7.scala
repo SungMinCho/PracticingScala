@@ -1,6 +1,5 @@
-import java.util.concurrent._
-
 object Par {
+  import java.util.concurrent._
   type Par[A] = ExecutorService => Future[A]
   def run[A](s : ExecutorService)(a : Par[A]) : Future[A] = a(s)  
   
@@ -104,12 +103,53 @@ object Par {
   def delay[A](fa: => Par[A]) : Par[A] = es => fa(es)
 }
 
+object Nonblocking {
+  import java.util.concurrent.{ExecutorService, CountDownLatch, Callable}
+  import java.util.concurrent.atomic.AtomicReference
+  
+  sealed trait Future[+A] {
+    // should make private in a package to maintain pureness
+    def apply(k : A => Unit) : Unit
+  }
+  
+  // why covariant A this time?
+  type Par[+A] = ExecutorService => Future[A]
+  
+  def run[A](es : ExecutorService)(p : Par[A]) : A = {
+    val ref = new AtomicReference[A]
+    val latch = new CountDownLatch(1)
+    p(es){ a => ref.set(a); latch.countDown }
+    latch.await
+    ref.get
+  }
+  
+  def unit[A](a : A) : Par[A] =
+    es => new Future[A] {
+      def apply(k : A => Unit) : Unit = k(a)
+    }
+    
+  def eval(es : ExecutorService)(r: => Unit) : Unit =
+    es.submit(new Callable[Unit] { def call = r })
+    
+  def fork[A](a: => Par[A]) : Par[A] =
+    es => new Future[A] {
+      def apply(k : A => Unit) : Unit =
+        eval(es)(a(es)(k)) // do a(es)(k) in a new thread
+    }
+  
+  //def map2[A,B,C](a:Par[A], b:Par[B])(f : (A,B) => C) : Par[C] =
+    // need Actor
+}
+
 object Chapter7 {
   def main(args : Array[String]) = {
-    import Par._
-    val e : ExecutorService = Executors.newFixedThreadPool(1)
-    
-    val a = lazyUnit(42+1)
-    println(equal(e)(a,fork(a)))
+    {
+      import Par._
+      import java.util.concurrent._
+      val e : ExecutorService = Executors.newFixedThreadPool(2)
+      
+      val a = lazyUnit(42+1)
+      println(equal(e)(a,fork(a)))
+    }
   }
 }
