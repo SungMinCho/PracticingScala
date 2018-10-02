@@ -101,6 +101,27 @@ object Par {
     p1(e).get == p2(e).get
   
   def delay[A](fa: => Par[A]) : Par[A] = es => fa(es)
+  
+  def choice[A](cond : Par[Boolean])(t:Par[A],f:Par[A]) : Par[A] =
+    es =>
+      if(run(es)(cond).get) t(es)
+      else f(es)
+  
+  def choiceN[A](n : Par[Int])(choices : List[Par[A]]) : Par[A] =
+    es => choices(n(es).get)(es) // bound error possible
+  // choice(cond)(t,f) = choiceN(cond.map(if(_) 0 else 1))(List(t,f))
+  
+  def choiceMap[K,V](key : Par[K])(choices : Map[K,Par[V]]) : Par[V] =
+    es => choices(key(es).get)(es)
+  
+  def chooser[A,B](pa : Par[A])(choices : A => Par[B]) : Par[B] =
+    es => choices(pa(es).get)(es)
+  
+  def join[A](a : Par[Par[A]]) : Par[A] =
+    es => a(es).get()(es)
+  
+  def flatMap[A,B](pa : Par[A])(f : A => Par[B]) = join(map(pa)(f))
+  // join(a) = flatMap(a)(id)
 }
 
 object Nonblocking {
